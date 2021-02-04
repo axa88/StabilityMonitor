@@ -8,11 +8,12 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using static System.Console;
+using static System.Environment;
 
 
 namespace StabilityMonitor
 {
-	class Program
+	internal static class Program
 	{
 		private static string _pathFileExt;
 		private static readonly Regex ValidIpOptionalPort = new Regex(@"^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(:[0-9]+)?$");
@@ -22,9 +23,9 @@ namespace StabilityMonitor
 		private static Ping _ping;
 		private static Timer _timer;
 
-		static void Main(string[] args)
+		private static void Main()
 		{
-			var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "NetworkMonitorLog");
+			var dir = Path.Combine(GetFolderPath(SpecialFolder.DesktopDirectory), "NetworkMonitorLog");
 			Directory.CreateDirectory(dir);
 			_pathFileExt = Path.Combine(dir, "Log.txt");
 			var file = File.Open(_pathFileExt, FileMode.Create);
@@ -38,7 +39,7 @@ namespace StabilityMonitor
 			{
 				Thread.Sleep(500);
 
-				WriteLine("host:");
+				WriteLine("ping who:");
 				var h = ReadLine();
 				if (!string.IsNullOrWhiteSpace(h) && (ValidIpOptionalPort.Match(h).Success || ValidHostname.Match(h).Success))
 				{
@@ -54,7 +55,7 @@ namespace StabilityMonitor
 			{
 				Thread.Sleep(500);
 
-				WriteLine("ping frequency in seconds:");
+				WriteLine("ping how often (seconds):");
 				var per = ReadLine();
 				if (per != default && int.TryParse(per, out var p))
 					period = p;
@@ -64,47 +65,54 @@ namespace StabilityMonitor
 
 			_timer = new Timer(TimerCallback, default, 0, Timeout.Infinite);
 
+			using (var sw = new StreamWriter(_pathFileExt, true))
+			{
+				sw.WriteLine($"{DateTime.Now} Monitoring {host}");
+				sw.Close();
+			}
+
 			void TimerCallback(object state)
 			{
-				PingHost(host);
+				try { PingHost(host); }
+				catch (Exception exception)
+				{
+					using var sw = new StreamWriter(_pathFileExt, true);
+					sw.WriteLine(exception.Message);
+					sw.Close();
+
+					if (!(exception is PingException))
+						Exit(0);
+				}
+
 				_timer.Change(period * 1000, Timeout.Infinite);
 			}
 
 			Thread.Sleep(Timeout.Infinite);
 		}
 
-		private static void PingHost(string nameOrAddress)
+		private static void PingHost(string address)
 		{
-			try
+			var reply = _ping.Send(address);
+			if (reply == null)
+				throw new InvalidOperationException("reply is null");
+
+			if (reply.Status != IPStatus.Success)
 			{
-				var reply = _ping.Send(nameOrAddress);
-				if (reply == null)
-					throw new InvalidOperationException("reply is null");
-
-				if (reply.Status != IPStatus.Success)
+				if (!_isFailed)
 				{
-					if (!_isFailed)
-					{
-						_isFailed = true;
+					_isFailed = true;
 
-						using var sw = new StreamWriter(_pathFileExt, true);
-						sw.WriteLine($"{DateTime.Now} {reply.Address} {reply.Status}");
-						sw.Close();
-					}
-				}
-				else if (_isFailed)
-				{
-					_isFailed = false;
 					using var sw = new StreamWriter(_pathFileExt, true);
-					sw.WriteLine($"{DateTime.Now} {reply.Address} {reply.Status}");
+					sw.WriteLine($"{DateTime.Now} {address} {reply.Status}");
 					sw.Close();
 				}
-
 			}
-			catch (PingException pingException)
+			else if (_isFailed)
 			{
+				_isFailed = false;
 				using var sw = new StreamWriter(_pathFileExt, true);
-				sw.WriteLine(pingException.Message);
+				sw.WriteLine($"{DateTime.Now} {address} {reply.Status}");
+				sw.Close();
 			}
 		}
 
